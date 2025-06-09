@@ -2,103 +2,76 @@ import os
 import discord
 from discord.ext import commands
 from discord import app_commands
-from dotenv import load_dotenv
-
-load_dotenv()
+from discord.ui import View, Button
 
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
-intents.message_content = True
+intents.messages = True
+intents.message_content = False
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-tree = bot.tree
+ticket_channels = {}  # Keeps track of active tickets by user ID
 
-user_tickets = {}
-
-class TicketView(discord.ui.View):
-    @discord.ui.button(label="👁️ Open Ticket", style=discord.ButtonStyle.blurple, custom_id="open_ticket_button")
-    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        user_id = interaction.user.id
-        guild = interaction.guild
-
-        if user_id in user_tickets and guild.get_channel(user_tickets[user_id]):
-            await interaction.response.send_message("❌ You already have an open ticket!", ephemeral=True)
-            return
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-        }
-
-        ticket_channel = await guild.create_text_channel(
-            name=f"ticket-{interaction.user.name}",
-            overwrites=overwrites,
-            topic=f"Ticket for {interaction.user.name}"
-        )
-
-        user_tickets[user_id] = ticket_channel.id
-        await ticket_channel.send(f"{interaction.user.mention}, welcome! Use `/close` when you're done.")
-        await interaction.response.send_message(f"✅ Ticket opened: {ticket_channel.mention}", ephemeral=True)
+class TicketView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(Button(label="👁️ Open Ticket", style=discord.ButtonStyle.primary, custom_id="open_ticket"))
 
 @bot.event
 async def on_ready():
-    await tree.sync()
-    print(f"✅ Logged in as {bot.user}")
+    await bot.tree.sync()
+    print(f"Logged in as {bot.user}")
 
-@tree.command(name="openpanel", description="Send the ticket panel")
+@bot.tree.command(name="openpanel", description="Send the ticket panel to a channel")
 @app_commands.describe(channel="The channel to send the panel to")
 async def openpanel(interaction: discord.Interaction, channel: discord.TextChannel):
-    embed = discord.Embed(
-        title="What's this about?",
-        description="**Open A Ticket To Buy!**\n\n```How Do I open a ticket?\nTo open a ticket, just click the button below!```",
-        color=discord.Color.magenta()
-    )
+    embed = discord.Embed(title="Support Ticket Panel", description="Click the button to open a ticket.", color=0xFF69B4)
     await channel.send(embed=embed, view=TicketView())
-    await interaction.response.send_message("✅ Ticket panel sent.", ephemeral=True)
+    await interaction.response.send_message("Ticket panel sent!", ephemeral=True)
 
-@tree.command(name="close", description="Close the ticket (remove user access)")
-async def close(interaction: discord.Interaction):
-    channel = interaction.channel
-    if not channel.name.startswith("ticket-"):
-        await interaction.response.send_message("❌ This is not a ticket channel.", ephemeral=True)
-        return
-
-    await channel.set_permissions(interaction.user, view_channel=False)
-    await interaction.response.send_message("🔒 Ticket closed. Use `/open` to reopen it.")
-
-@tree.command(name="open", description="Reopen the ticket")
-async def open(interaction: discord.Interaction):
-    channel = interaction.channel
-    if not channel.name.startswith("ticket-"):
-        await interaction.response.send_message("❌ This is not a ticket channel.", ephemeral=True)
-        return
-
-    await channel.set_permissions(interaction.user, view_channel=True, send_messages=True, read_message_history=True)
-    await interaction.response.send_message("🔓 Ticket reopened.")
-
-@tree.command(name="delete", description="Delete the ticket channel")
-async def delete(interaction: discord.Interaction):
-    channel = interaction.channel
-    if not channel.name.startswith("ticket-"):
-        await interaction.response.send_message("❌ This is not a ticket channel.", ephemeral=True)
-        return
-
-    for user_id, chan_id in list(user_tickets.items()):
-        if chan_id == channel.id:
-            del user_tickets[user_id]
-            break
-
-    await interaction.response.send_message("🗑️ Deleting this ticket...", ephemeral=True)
-    await channel.delete()
-
-@tree.command(name="pay", description="Show payment instructions")
+@bot.tree.command(name="pay", description="Show payment instructions")
 async def pay(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="How To Pay",
-        description=":CashApp~1: `Cashapp: $MacAndCheeseFr`\n:pay_btc: :eth: `Crypto: Tell Me Which You are paying with.`",
-        color=discord.Color.magenta()
-    )
-    await interaction.response.send_message(embed=embed)
+    embed = discord.Embed(title="How to Pay", color=0xFF69B4)
+    embed.description = ":CashApp~1: `Cashapp: $MacAndCheeseFr`\n:pay_btc: :eth: `Crypto: Tell Me Which You are paying with.`"
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="close", description="Close the ticket")
+async def close(interaction: discord.Interaction):
+    await interaction.channel.set_permissions(interaction.user, view_channel=False)
+    await interaction.response.send_message("Ticket closed.")
+
+@bot.tree.command(name="open", description="Reopen the ticket")
+async def open(interaction: discord.Interaction):
+    await interaction.channel.set_permissions(interaction.user, view_channel=True)
+    await interaction.response.send_message("Ticket reopened.")
+
+@bot.tree.command(name="delete", description="Delete the ticket channel")
+async def delete(interaction: discord.Interaction):
+    await interaction.channel.delete()
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    if interaction.type == discord.InteractionType.component:
+        if interaction.data["custom_id"] == "open_ticket":
+            user_id = interaction.user.id
+
+            if user_id in ticket_channels:
+                await interaction.response.send_message("You already have an open ticket!", ephemeral=True)
+                return
+
+            guild = interaction.guild
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
+                guild.me: discord.PermissionOverwrite(view_channel=True)
+            }
+            ticket_channel = await guild.create_text_channel(name=f"ticket-{interaction.user.name}", overwrites=overwrites)
+            ticket_channels[user_id] = ticket_channel.id
+
+            await ticket_channel.send(f"{interaction.user.mention}, thank you for opening a ticket. Staff will be with you shortly.")
+            await interaction.response.send_message(f"Ticket created: {ticket_channel.mention}", ephemeral=True)
+
+    await bot.process_application_commands(interaction)
 
 bot.run(os.getenv("TOKEN"))
